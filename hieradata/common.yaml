@@ -1,0 +1,278 @@
+---
+# Variables
+variables:
+  - &enable_firewall true
+  - &hiera_hierarchy
+    - "%{literal('%')}{clientcert}"
+    - "%{literal('%')}{tier}"
+    - "%{literal('%')}{pp_role}"
+    - "%{literal('%')}{data_centre}"
+    - common
+  - &hiera_backends
+    yaml:
+      datadir: "/etc/puppetlabs/code/environments/%{literal('%')}{environment}/hieradata"
+    json:
+      datadir: "/etc/puppetlabs/code/environments/%{literal('%')}{environment}/hieradata"
+  - &manage_r10k true
+  - &manage_heira true
+  - &r10k_sources
+    base:
+      remote: 'https://github.com/beergeek/puppet_env.git'
+      basedir: '/etc/puppetlabs/code/environments'
+
+puppet_enterprise::profile::mcollective::agent::activemq_brokers:
+  - "%{::servername}"
+
+# DNS
+profiles::dns::name_servers:
+  - 10.0.2.3
+profiles::dns::purge: false
+
+# SSH
+profiles::ssh::enable_firewall: *enable_firewall
+profiles::ssh::banner_content: "This system is the property of Puppet Labs. Unauthorised access is not permitted"
+profiles::ssh::allowed_groups:
+  - 'root'
+  - 'vagrant'
+profiles::ssh::options_hash:
+  Port: 22
+  AcceptEnv: 'LANG LC_*'
+  ChallengeResponseAuthentication: no
+  PermitRootLogin: yes
+  PrintMotd: no
+  Subsystem: 'sftp /usr/libexec/openssh/sftp-server'
+  UsePAM: yes
+  X11Forwarding: yes
+
+# SUDO
+profiles::sudo::sudo_hash:
+  vagrant:
+    priority: 10
+    content: '%vagrant ALL=(ALL) NOPASSWD: ALL'
+profiles::sudo::sudo_hash_defaults:
+  priority: 50
+profiles::sudo::sudo_purge: true
+profiles::sudo::sudo_replace_config: true
+
+# LOGGING
+profiles::logging::log_local: true
+profiles::logging::port: 514
+profiles::logging::remote_servers: false
+profiles::logging::remote_type: 'tcp'
+profiles::logging::rotate: 10
+profiles::logging::rotate_every: 'day'
+profiles::logging::size: '200k'
+
+# COM
+profiles::com::manage_r10k: *manage_r10k
+profiles::com::r10k_sources: *r10k_sources
+profiles::com::manage_hiera: *manage_heira
+profiles::com::hiera_hierarchy: *hiera_hierarchy
+profiles::com::hiera_backends: *hiera_backends
+profiles::com::enable_firewall: *enable_firewall
+
+# MOM
+profiles::mom::manage_r10k: *manage_r10k
+profiles::mom::r10k_sources: *r10k_sources
+profiles::mom::manage_hiera: *manage_heira
+profiles::mom::hiera_hierarchy: *hiera_hierarchy
+profiles::mom::hiera_backends: *hiera_backends
+profiles::mom::enable_firewall: *enable_firewall
+profiles::mom::node_groups:
+  'PE Infrastructure':
+    classes:
+      'puppet_enterprise':
+        'certificate_authority_host': "%{::servername}"
+        'console_host': "%{::servername}"
+        'console_port': '443'
+        'database_host': "%{::servername}"
+        'database_port': '5432'
+        'database_ssl': 'true'
+        'mcollective_middleware_hosts':
+          - "%{trusted.certname}"
+        'puppet_master_host': "%{::servername}"
+        'puppetdb_database_name': 'pe-puppetdb'
+        'puppetdb_database_user': 'pe-puppetdb'
+        'puppetdb_host': "%{::servername}"
+        'puppetdb_port': '8081'
+  'PE PuppetDB':
+    classes:
+      'puppet_enterprise::profile::puppetdb': {}
+    parent: 'PE Infrastructure'
+    rule: ['or', ['=', 'name', "%{::servername}"]]
+  'Production environment':
+    classes: {}
+    override_environment: true
+    rule: []
+  'PE MCollective':
+    classes:
+      'puppet_enterprise::profile::mcollective::agent': {}
+    parent: 'PE Infrastructure'
+    rule: ["and",["~",["fact","id"],"root|Administrator|vagrant"],["~",["fact","aio_agent_version"],".+"]]
+  'PE Master':
+    classes:
+      'pe_repo': {}
+      'pe_repo::platform::el_6_x86_64': {}
+      'pe_repo::platform::windows_x86_64': {}
+      'roles::mom_server': {}
+      'puppet_enterprise::profile::master': {}
+      'puppet_enterprise::profile::master::mcollective': {}
+      'puppet_enterprise::profile::mcollective::peadmin': {}
+    parent: 'PE Infrastructure'
+    rule: ['or', ['=', 'name', "%{::servername}"]]
+  'PE ActiveMQ Broker':
+    classes:
+      'puppet_enterprise::profile::amq::broker': {}
+    parent: 'PE Infrastructure'
+    rule: ['or', ['=', 'name', "%{::servername}"]]
+  'PE Agent':
+    classes:
+      'puppet_enterprise::profile::agent': {}
+    parent: 'PE Infrastructure'
+    rule: ['and', ['~', ['fact', 'aio_agent_version'], '.+']]
+  'PE Certificate Authority':
+    classes:
+      'puppet_enterprise::profile::certificate_authority': {}
+    parent: 'PE Infrastructure'
+    rule: ['or', ['=', 'name', "%{::servername}"]]
+  'PE Console':
+    classes:
+      'pe_console_prune':
+        'prune_upto': 30
+      'puppet_enterprise::license': {}
+      'puppet_enterprise::profile::console': {}
+    parent: 'PE Infrastructure'
+    rule: ['or', ['=', 'name', "%{::servername}"]]
+  'Web Servers':
+    classes:
+      'roles::web_server': {}
+    rule: ['and', ['~', ['fact', 'pp_role'], 'web_server']]
+profiles::mom::node_groups_defaults:
+  ensure: present
+  environment: production
+  parent: 'All Nodes'
+
+
+# Load Balancer
+profiles::lb_services::enable_firewall: *enable_firewall
+profiles::lb_services::listeners:
+  stats:
+    collect_exported: false
+    ipaddress: "%{::ipaddress_eth1}"
+    ports: '9090'
+    options:
+      mode: 'http'
+      stats: ['uri /', 'auth puppet:puppet']
+  http00:
+    collect_exported: true
+    ipaddress: "%{::ipaddress_eth1}"
+    ports: '80'
+    options:
+      mode: 'tcp'
+  https00:
+    collect_exported: true
+    ipaddress: "%{::ipaddress_eth1}"
+    ports: '443'
+    options:
+      mode: 'tcp'
+  puppet00:
+    collect_exported: true
+    ipaddress: "%{::ipaddress_eth1}"
+    ports: '8140'
+    options:
+      mode: 'tcp'
+  mco00:
+    collect_exported: true
+    ipaddress: "%{::ipaddress_eth1}"
+    ports: '61613'
+    options:
+      mode: 'tcp'
+      balance: 'source'
+
+# BASE
+profiles::base::enable_firewall: *enable_firewall
+profiles::base::mco_client_array:
+  - 'com0.puppetlabs.vm-peadmin'
+  - 'com1.puppetlabs.vm-peadmin'
+profiles::base::wsus_server: 'http://wsus_server.local'
+profiles::base::wsus_server_port: '8530'
+
+# TIME_LOCALE
+profiles::time_locale::ntp_servers:
+  - 0.au.pool.ntp.org
+  - 1.au.pool.ntp.org
+  - 2.au.pool.ntp.org
+  - 3.au.pool.ntp.org
+profiles::time_locale::timezone: 'UTC'
+
+profiles::base::sysctl_settings:
+  kernel.msgmnb:
+    value : '65536'
+  kernel.msgmax:
+    value : '65536'
+  kernel.shmmax:
+    value : '2588483584'
+  kernel.shmall:
+    value : '2097152'
+  fs.file-max:
+    value : '6815744'
+  net.ipv4.tcp_keepalive_time:
+    value : '1800'
+  net.ipv4.tcp_keepalive_intvl:
+    value : '30'
+  net.ipv4.tcp_keepalive_probes:
+    value : '5'
+  net.ipv4.tcp_fin_timeout:
+    value : '30'
+  kernel.shmmni:
+    value : '4096'
+  fs.aio-max-nr:
+    value : '1048576'
+  kernel.sem:
+    value : '250 32000 100 128'
+  net.ipv4.ip_local_port_range:
+    value : '9000 65500'
+  net.core.rmem_default:
+    value : '262144'
+  net.core.rmem_max:
+    value : '4194304'
+  net.core.wmem_default:
+    value : '262144'
+  net.core.wmem_max:
+    value : '1048576'
+profiles::base::sysctl_defaults:
+  ensure: present
+  permanent: 'yes'
+
+# WEB_SERVICES
+profiles::web_services::enable_firewall: *enable_firewall
+profiles::web_services::website_hash:
+  'elmo.puppetlabs.vm':
+    docroot: 'elmo'
+    database_search: "Mysql_database['elmo']"
+    site_package: 'website_test'
+  'kermit.puppetlabs.vm':
+    docroot: 'kermit'
+    repo_source: 'git://github.com/beergeek/kermit.git'
+    database_search: "Mysql_database['kermit']"
+  'animal.puppetlabs.vm':
+    docroot: 'animal'
+    repo_source: 'git://github.com/beergeek/animal.git'
+  'rob.puppetlabs.vm':
+    docroot: 'rob'
+    repo_source: 'git://github.com/beergeek/rob.git'
+    database_search: "Mysql_database['rob']"
+profiles::web_services::website_defaults:
+  port: '80'
+  priority: '10'
+  docroot: '/var/www/${title}'
+  repo_provider: git
+
+# DATABASE_SERVICES
+profiles::database_services::enable_firewall: *enable_firewall
+profiles::database_services::db_hash:
+  elmo: {}
+  kermit: {}
+profiles::database_services::db_defaults:
+  user: 'vmware'
+  password: 'secret'

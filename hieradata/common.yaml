@@ -23,6 +23,9 @@ variables:
 puppet_enterprise::profile::mcollective::agent::activemq_brokers:
   - "%{::servername}"
 
+pe_r10k::git_settings:
+  provider: 'shellgit'
+
 # DNS
 profiles::dns::name_servers:
   - 10.0.2.3
